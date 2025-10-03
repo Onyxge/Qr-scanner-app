@@ -30,12 +30,11 @@ export function QRScanner() {
   const { toast } = useToast()
 
   const detectPartNumber = (text: string): string | null => {
-    const patterns = [
-      /\b[A-Z]{2,4}-?\d{4,8}\b/g, // Format: ABC-1234 or ABC1234
-      /\b\d{4,8}-[A-Z]{2,4}\b/g, // Format: 1234-ABC
-      /\bPN[:\s]?([A-Z0-9-]{4,12})\b/gi, // Format: PN: ABC123 or PN ABC123
-      /\bPART[:\s]?([A-Z0-9-]{4,12})\b/gi, // Format: PART: ABC123
-      /\b[A-Z]{1,3}\d{3,8}[A-Z]?\b/g, // Format: A123456 or AB123456C
+    const patterns =[
+      /\b[A-Z]{2,4}-\d{3,4}[A-Z]?\b/g, // Primary: HL-012A, ABC-1234, AB-123B
+      /\b[A-Z]{1,3}\d{3,4}[A-Z]?\b/g, // Without hyphen: HL012A, ABC1234
+      /\bPN[:\s]?([A-Z0-9-]{4,12})\b/gi, // With PN prefix: PN: HL-012A
+      /\bPART[:\s]?([A-Z0-9-]{4,12})\b/gi, // With PART prefix: PART: HL-012A
     ]
 
     console.log("[v0] Detecting part number from:", text)
