@@ -5,8 +5,17 @@ import { Scanner } from "@yudiel/react-qr-scanner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Camera, CameraOff, Copy, ExternalLink, AlertCircle, RotateCcw } from "lucide-react"
+import { Camera, CameraOff, Copy, ExternalLink, AlertCircle, RotateCcw, Search } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { PartDataTable } from "@/components/part-data-table"
+
+interface PartData {
+  id: string
+  name: string
+  quantity: number
+  position: string
+  cadAssembly: string
+}
 
 export function QRScanner() {
   const [isScanning, setIsScanning] = useState(false)
@@ -15,18 +24,88 @@ export function QRScanner() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null)
   const [cameraFacing, setCameraFacing] = useState<"user" | "environment">("environment")
   const [retryCount, setRetryCount] = useState(0)
+  const [partData, setPartData] = useState<PartData | null>(null)
+  const [isLoadingPartData, setIsLoadingPartData] = useState(false)
+  const [detectedPartNumber, setDetectedPartNumber] = useState<string | null>(null)
   const { toast } = useToast()
+
+  const detectPartNumber = (text: string): string | null => {
+    const patterns = [
+      /\b[A-Z]{2,4}-?\d{4,8}\b/g, // Format: ABC-1234 or ABC1234
+      /\b\d{4,8}-[A-Z]{2,4}\b/g, // Format: 1234-ABC
+      /\bPN[:\s]?([A-Z0-9-]{4,12})\b/gi, // Format: PN: ABC123 or PN ABC123
+      /\bPART[:\s]?([A-Z0-9-]{4,12})\b/gi, // Format: PART: ABC123
+      /\b[A-Z]{1,3}\d{3,8}[A-Z]?\b/g, // Format: A123456 or AB123456C
+    ]
+
+    console.log("[v0] Detecting part number from:", text)
+
+    for (const pattern of patterns) {
+      const matches = text.match(pattern)
+      if (matches && matches.length > 0) {
+        let partNumber = matches[0]
+        partNumber = partNumber.replace(/^(PN|PART)[:\s]?/gi, "").trim()
+        console.log("[v0] Part number detected:", partNumber)
+        return partNumber
+      }
+    }
+
+    console.log("[v0] No pattern matched, using full text as part number")
+    return text.trim()
+  }
+
+  const fetchPartData = async (partNumber: string) => {
+    setIsLoadingPartData(true)
+    setPartData(null)
+
+    try {
+      console.log("[v0] Fetching data for part number:", partNumber)
+      const response = await fetch(`/api/parts/${encodeURIComponent(partNumber)}`)
+      const result = await response.json()
+
+      console.log("[v0] API response:", result)
+
+      if (result.success && result.data) {
+        setPartData(result.data)
+        toast({
+          title: "Part Data Found!",
+          description: `Successfully loaded data for ${partNumber}`,
+        })
+      } else {
+        toast({
+          title: "Part Not Found",
+          description: result.error || `No data found for part number: ${partNumber}`,
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error("[v0] Error fetching part data:", error)
+      toast({
+        title: "Error",
+        description: "Failed to fetch part data. Please check your API configuration.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsLoadingPartData(false)
+    }
+  }
 
   const handleScan = useCallback(
     (result: any) => {
       if (result?.[0]?.rawValue && result[0].rawValue !== scannedData) {
         const scannedText = result[0].rawValue
         setScannedData(scannedText)
-        setScanHistory((prev) => [scannedText, ...prev.slice(0, 4)]) // Keep last 5 scans
-        toast({
-          title: "QR Code Scanned!",
-          description: "Successfully scanned QR code",
-        })
+        setScanHistory((prev) => [scannedText, ...prev.slice(0, 4)])
+
+        const partNumber = detectPartNumber(scannedText)
+        if (partNumber) {
+          setDetectedPartNumber(partNumber)
+          fetchPartData(partNumber)
+          toast({
+            title: "QR Code Scanned!",
+            description: `Detected part number: ${partNumber}`,
+          })
+        }
       }
     },
     [scannedData, toast],
@@ -36,32 +115,25 @@ export function QRScanner() {
     (error: any) => {
       console.log("[v0] QR Scanner Error:", error)
 
-      if (error?.name === "OverconstrainedError" && retryCount < 2) {
-        console.log("[v0] Trying fallback camera configuration...")
+      // Immediate retry with progressively simpler constraints
+      if (error?.name === "OverconstrainedError") {
+        console.log(`[v0] OverconstrainedError - Retry attempt: ${retryCount}`)
 
-        // First retry: switch camera
-        if (retryCount === 0) {
-          setCameraFacing((prev) => (prev === "environment" ? "user" : "environment"))
-          setRetryCount(1)
-          toast({
-            title: "Switching Camera",
-            description: "Trying different camera...",
-          })
-          return
-        }
+        if (retryCount < 3) {
+          setRetryCount((prev) => prev + 1)
 
-        // Second retry: use minimal constraints
-        if (retryCount === 1) {
-          setRetryCount(2)
-          toast({
-            title: "Using Basic Camera",
-            description: "Falling back to basic camera settings...",
-          })
+          // Don't show error toast on first few retries, just try again
+          setTimeout(() => {
+            if (isScanning) {
+              setIsScanning(false)
+              setTimeout(() => setIsScanning(true), 200)
+            }
+          }, 100)
           return
         }
       }
 
-      // If all retries failed or other error
+      // If all retries failed or other error types
       setHasPermission(false)
       setIsScanning(false)
       setRetryCount(0)
@@ -72,7 +144,7 @@ export function QRScanner() {
       } else if (error?.name === "NotFoundError") {
         errorMessage = "No camera found on this device."
       } else if (error?.name === "OverconstrainedError") {
-        errorMessage = "Camera not compatible. Try a different device or browser."
+        errorMessage = "Camera constraints not supported. Using basic camera mode."
       }
 
       toast({
@@ -81,18 +153,17 @@ export function QRScanner() {
         variant: "destructive",
       })
     },
-    [toast, retryCount],
+    [toast, retryCount, isScanning],
   )
 
   const startScanning = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-      })
-      stream.getTracks().forEach((track) => track.stop()) // Stop the test stream
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      stream.getTracks().forEach((track) => track.stop())
+
       setHasPermission(true)
       setIsScanning(true)
-      setRetryCount(0) // Reset retry count on successful start
+      setRetryCount(0)
     } catch (error) {
       console.log("[v0] Camera permission denied:", error)
       setHasPermission(false)
@@ -106,16 +177,16 @@ export function QRScanner() {
 
   const stopScanning = () => {
     setIsScanning(false)
-    setRetryCount(0) // Reset retry count when stopping
+    setRetryCount(0)
   }
 
   const switchCamera = () => {
     const newFacing = cameraFacing === "environment" ? "user" : "environment"
     setCameraFacing(newFacing)
-    setRetryCount(0) // Reset retry count when manually switching
+    setRetryCount(0)
     if (isScanning) {
       setIsScanning(false)
-      setTimeout(() => setIsScanning(true), 100) // Brief delay to reinitialize
+      setTimeout(() => setIsScanning(true), 200)
     }
   }
 
@@ -158,28 +229,33 @@ export function QRScanner() {
   }
 
   const getConstraints = () => {
-    if (retryCount >= 2) {
-      // Minimal constraints as last resort
-      return {
-        video: true,
-      }
-    } else if (retryCount === 1) {
-      // Basic constraints with any camera
-      return {
-        video: {
-          width: { min: 320, ideal: 640, max: 1920 },
-          height: { min: 240, ideal: 480, max: 1080 },
-        },
-      }
-    } else {
-      // Preferred constraints
-      return {
-        video: {
-          facingMode: cameraFacing,
-          width: { min: 320, ideal: 640, max: 1920 },
-          height: { min: 240, ideal: 480, max: 1080 },
-        },
-      }
+    switch (retryCount) {
+      case 0:
+        return {
+          video: {
+            facingMode: { ideal: cameraFacing },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+        }
+      case 1:
+        return {
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+        }
+      case 2:
+        return {
+          video: {
+            width: { ideal: 320 },
+            height: { ideal: 240 },
+          },
+        }
+      default:
+        return {
+          video: true,
+        }
     }
   }
 
@@ -238,7 +314,15 @@ export function QRScanner() {
             <CardTitle className="text-center flex items-center justify-center gap-2">
               Camera View
               <Badge variant="secondary">
-                {retryCount >= 2 ? "Basic Mode" : cameraFacing === "environment" ? "Back Camera" : "Front Camera"}
+                {retryCount >= 3
+                  ? "Basic Mode"
+                  : retryCount >= 2
+                    ? "Minimal Mode"
+                    : retryCount >= 1
+                      ? "Standard Mode"
+                      : cameraFacing === "environment"
+                        ? "Back Camera"
+                        : "Front Camera"}
               </Badge>
             </CardTitle>
           </CardHeader>
@@ -268,6 +352,8 @@ export function QRScanner() {
         </Card>
       )}
 
+      {(partData || isLoadingPartData) && <PartDataTable data={partData!} isLoading={isLoadingPartData} />}
+
       {/* Current Scan Result */}
       {scannedData && (
         <Card>
@@ -275,6 +361,12 @@ export function QRScanner() {
             <CardTitle className="flex items-center gap-2">
               Latest Scan
               <Badge variant="secondary">New</Badge>
+              {detectedPartNumber && (
+                <Badge variant="default" className="gap-1">
+                  <Search className="h-3 w-3" />
+                  Part: {detectedPartNumber}
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -291,6 +383,18 @@ export function QRScanner() {
                   <Button onClick={() => openLink(scannedData)} variant="outline" size="sm" className="gap-2">
                     <ExternalLink className="h-4 w-4" />
                     Open Link
+                  </Button>
+                )}
+                {detectedPartNumber && (
+                  <Button
+                    onClick={() => fetchPartData(detectedPartNumber)}
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    disabled={isLoadingPartData}
+                  >
+                    <Search className="h-4 w-4" />
+                    {isLoadingPartData ? "Loading..." : "Lookup Part"}
                   </Button>
                 )}
               </div>
