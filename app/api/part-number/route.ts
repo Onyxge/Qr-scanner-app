@@ -5,31 +5,46 @@ export async function GET(request: NextRequest, { params }: { params: { partNumb
     const { partNumber } = params
 
     const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY
-    const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID
-    const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "Sheet1"
+    const SPREADSHEET_ID = process.env.SPREADSHEET_ID
+    const SHEET_NAME = process.env.SHEET_NAME || "Sheet1"
 
     console.log("[v0] Fetching data for part number:", partNumber)
     console.log("[v0] Using sheet name:", SHEET_NAME)
 
     if (!GOOGLE_SHEETS_API_KEY || !SPREADSHEET_ID) {
-      console.error("[v0] Missing required environment variables")
+      const missingVars = []
+      if (!GOOGLE_SHEETS_API_KEY) missingVars.push("GOOGLE_SHEETS_API_KEY")
+      if (!SPREADSHEET_ID) missingVars.push("SPREADSHEET_ID")
+
       return NextResponse.json(
         {
           success: false,
-          error: "Google Sheets API not configured. Please add GOOGLE_SHEETS_API_KEY and GOOGLE_SPREADSHEET_ID.",
+          error: `Missing environment variables: ${missingVars.join(", ")}. Please add them in Project Settings.`,
         },
         { status: 500 },
       )
     }
 
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${SHEET_NAME}?key=${GOOGLE_SHEETS_API_KEY}`
-    console.log("[v0] Fetching from Google Sheets API...")
+    const encodedSheetName = encodeURIComponent(SHEET_NAME)
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodedSheetName}?key=${GOOGLE_SHEETS_API_KEY}`
+    console.log("[v0] Fetching from URL:", url)
 
     const response = await fetch(url)
 
     if (!response.ok) {
       const errorText = await response.text()
       console.error("[v0] Google Sheets API error:", response.status, errorText)
+
+      if (response.status === 400) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Sheet "${SHEET_NAME}" not found. Please verify the sheet name in your Google Spreadsheet matches exactly (case-sensitive). Common names: "Sheet1", "Part Assembly", etc.`,
+          },
+          { status: 400 },
+        )
+      }
+
       return NextResponse.json(
         {
           success: false,
@@ -40,10 +55,9 @@ export async function GET(request: NextRequest, { params }: { params: { partNumb
     }
 
     const data = await response.json()
-    console.log("[v0] Google Sheets API response received")
+    console.log("[v0] Google Sheets API response received, rows:", data.values?.length || 0)
 
     if (!data.values || data.values.length === 0) {
-      console.log("[v0] No data found in sheet")
       return NextResponse.json(
         {
           success: false,
@@ -53,11 +67,11 @@ export async function GET(request: NextRequest, { params }: { params: { partNumb
       )
     }
 
-    const headers = data.values[0].map((h: string) => h.toLowerCase().trim())
+    const headers = data.values[0].map((h: string) => h.toLowerCase().trim().replace(/\s+/g, ""))
     const rows = data.values.slice(1)
 
     console.log("[v0] Headers found:", headers)
-    console.log("[v0] Total rows:", rows.length)
+    console.log("[v0] First row sample:", rows[0])
 
     const idIndex = headers.findIndex((h: string) => h === "id")
     const nameIndex = headers.findIndex((h: string) => h === "name")
@@ -66,24 +80,31 @@ export async function GET(request: NextRequest, { params }: { params: { partNumb
     const cadAssemblyIndex = headers.findIndex((h: string) => h === "cadassembly")
 
     if (idIndex === -1) {
-      console.error("[v0] ID column not found in sheet")
+      console.error("[v0] Available headers:", data.values[0])
       return NextResponse.json(
         {
           success: false,
-          error: "ID column not found in sheet. Please ensure your sheet has an 'ID' column.",
+          error: `ID column not found. Available columns: ${data.values[0].join(", ")}`,
         },
         { status: 500 },
       )
     }
 
     const matchingRow = rows.find((row: string[]) => {
-      const rowId = row[idIndex]?.toString().trim().toLowerCase()
-      const searchId = partNumber.trim().toLowerCase()
+      const rowId = row[idIndex]?.toString().trim().toUpperCase()
+      const searchId = partNumber.trim().toUpperCase()
       return rowId === searchId
     })
 
     if (!matchingRow) {
-      console.log("[v0] Part number not found:", partNumber)
+      console.log("[v0] Part number not found. Searched for:", partNumber)
+      console.log(
+        "[v0] Available IDs:",
+        rows
+          .map((r: string[]) => r[idIndex])
+          .filter(Boolean)
+          .slice(0, 5),
+      )
       return NextResponse.json(
         {
           success: false,
